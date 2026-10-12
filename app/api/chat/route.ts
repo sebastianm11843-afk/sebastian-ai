@@ -31,13 +31,18 @@ export async function POST(req: Request) {
     if (invalidCharacter) {
       console.error("OPENAI_API_KEY contains a non-ASCII character.");
       return NextResponse.json(
-        { error: "The configured AI service key contains an invalid character. Replace the Production key with the original key text." },
+        {
+          error:
+            "The configured AI service key contains an invalid character. Replace the Production key with the original key text.",
+        },
         { status: 500 },
       );
     }
 
     const model = process.env.OPENAI_MODEL?.trim() || "gpt-5-mini";
 
+    // Responses API input content types depend on the message role:
+    // user -> input_text, assistant -> output_text.
     const input = messages
       .filter(
         (message: any) =>
@@ -46,7 +51,12 @@ export async function POST(req: Request) {
       )
       .map((message: any) => ({
         role: message.role,
-        content: [{ type: "input_text", text: message.content }],
+        content: [
+          {
+            type: message.role === "assistant" ? "output_text" : "input_text",
+            text: message.content,
+          },
+        ],
       }));
 
     if (input.length === 0) {
@@ -87,7 +97,12 @@ export async function POST(req: Request) {
 
       return NextResponse.json(
         { error: `AI service error: ${providerError}` },
-        { status: response.status >= 400 && response.status < 600 ? response.status : 502 },
+        {
+          status:
+            response.status >= 400 && response.status < 600
+              ? response.status
+              : 502,
+        },
       );
     }
 
