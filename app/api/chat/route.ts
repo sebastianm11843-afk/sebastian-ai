@@ -27,7 +27,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const invalidCharacter = [...key].find((char) => char.charCodeAt(0) > 127);
+    const invalidCharacter = key.split("").find((char) => char.charCodeAt(0) > 127);
     if (invalidCharacter) {
       console.error("OPENAI_API_KEY contains a non-ASCII character.");
       return NextResponse.json(
