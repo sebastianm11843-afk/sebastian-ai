@@ -3,18 +3,58 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Msg = { role: "user" | "assistant"; content: string; imageData?: string };
+type ChatRecord = { id: string; title: string; messages: Msg[]; updatedAt: number };
+
+const DB_NAME = "sebastian-ai-db-v1";
+const DB_STORE = "chats";
+const CHAT_LIMIT = 60;
+
+function openChatDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: "id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function readChats(): Promise<ChatRecord[]> {
+  const db = await openChatDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(DB_STORE, "readonly").objectStore(DB_STORE).getAll();
+    request.onsuccess = () => resolve((request.result as ChatRecord[]).sort((a, b) => b.updatedAt - a.updatedAt));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeChat(chat: ChatRecord) {
+  const db = await openChatDB();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).put(chat);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a photo, upload a text document, turn on web search for current information, or use voice mode." }];
 const STORAGE_KEY = "sebastian-ai-chat-v2";
 const MEMORY_KEY = "sebastian-ai-memory-v1";
 
 function extractSSE(buffer: string) {
-  const events = buffer.split("\n\n");
+  const events = buffer.split("
+
+");
   return { complete: events.slice(0, -1), rest: events.at(-1) ?? "" };
 }
 
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>(STARTER);
+  const [chatId, setChatId] = useState("");
+  const [chats, setChats] = useState<ChatRecord[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [web, setWeb] = useState(false);
@@ -30,34 +70,69 @@ export default function Home() {
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      const savedMemory = localStorage.getItem(MEMORY_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length) setMessages(parsed.map((m: Msg) => ({ role: m.role, content: m.content })));
-      }
-      if (savedMemory) setMemory(savedMemory);
-    } catch {}
-    setHydrated(true);
+    let cancelled = false;
+    (async () => {
+      try {
+        const savedMemory = localStorage.getItem(MEMORY_KEY);
+        if (savedMemory) setMemory(savedMemory);
+        const stored = await readChats();
+        if (cancelled) return;
+        let available = stored;
+        if (!stored.length) {
+          const legacy = localStorage.getItem(STORAGE_KEY);
+          if (legacy) {
+            const parsed = JSON.parse(legacy);
+            if (Array.isArray(parsed) && parsed.length) {
+              const migrated: ChatRecord = { id: crypto.randomUUID(), title: "Migrated chat", messages: parsed.map((m: Msg) => ({ role: m.role, content: m.content })), updatedAt: Date.now() };
+              await writeChat(migrated);
+              available = [migrated];
+            }
+          }
+        }
+        if (available.length) {
+          const active = available[0];
+          setChats(available.slice(0, CHAT_LIMIT));
+          setChatId(active.id);
+          setMessages(active.messages.length ? active.messages : STARTER);
+        } else {
+          const fresh: ChatRecord = { id: crypto.randomUUID(), title: "New chat", messages: STARTER, updatedAt: Date.now() };
+          await writeChat(fresh);
+          setChats([fresh]);
+          setChatId(fresh.id);
+        }
+      } catch {}
+      if (!cancelled) setHydrated(true);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-100).map(({ role, content }) => ({ role, content }))));
-      localStorage.setItem(MEMORY_KEY, memory);
-    } catch {}
-  }, [messages, memory, hydrated]);
+    try { localStorage.setItem(MEMORY_KEY, memory); } catch {}
+  }, [memory, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !chatId) return;
+    const title = messages.find((m) => m.role === "user")?.content.replace(/\s+/g, " ").trim().slice(0, 48) || "New chat";
+    const safeMessages = messages.slice(-100).map(({ role, content }) => ({ role, content }));
+    const record: ChatRecord = { id: chatId, title, messages: safeMessages, updatedAt: Date.now() };
+    writeChat(record).then(async () => {
+      try { setChats((current) => [record, ...current.filter((c) => c.id !== chatId)].slice(0, CHAT_LIMIT)); } catch {}
+    }).catch(() => {});
+  }, [messages, chatId, hydrated]);
 
   const speechSupported = useMemo(() => typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window), []);
 
   async function send() {
     const text = input.trim();
     if ((!text && !imageData) || loading) return;
-    const context = memory.trim() ? `\n\nPrivate user memory supplied by this app:\n${memory.slice(0, 5000)}` : "";
+    const context = memory.trim() ? `
+
+Private user memory supplied by this app:
+${memory.slice(0, 5000)}` : "";
     const userMessage: Msg = { role: "user", content: text || "Please analyze this photo.", ...(imageData ? { imageData } : {}) };
     const next = [...messages, { ...userMessage, content: userMessage.content + context }];
+    const requestMessages = next.slice(-30);
     setMessages(next);
     setInput("");
     setImageData("");
@@ -70,7 +145,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: next.map(({ role, content }) => ({ role, content })),
+          messages: requestMessages.map(({ role, content }) => ({ role, content })),
           web,
           model,
           imageData: userMessage.imageData || undefined,
@@ -91,7 +166,8 @@ export default function Home() {
         const parsed = extractSSE(buffer);
         buffer = parsed.rest;
         for (const event of parsed.complete) {
-          for (const line of event.split("\n")) {
+          for (const line of event.split("
+")) {
             if (!line.startsWith("data:")) continue;
             const raw = line.slice(5).trim();
             if (!raw || raw === "[DONE]") continue;
@@ -122,8 +198,20 @@ export default function Home() {
     }
   }
 
-  function newChat() {
+  async function newChat() {
+    const fresh: ChatRecord = { id: crypto.randomUUID(), title: "New chat", messages: STARTER, updatedAt: Date.now() };
+    setChatId(fresh.id);
     setMessages(STARTER);
+    setInput("");
+    setImageData("");
+    setImageName("");
+    try { await writeChat(fresh); setChats((current) => [fresh, ...current].slice(0, CHAT_LIMIT)); } catch {}
+  }
+
+  function loadChat(chat: ChatRecord) {
+    if (loading) return;
+    setChatId(chat.id);
+    setMessages(chat.messages.length ? chat.messages : STARTER);
     setInput("");
     setImageData("");
     setImageName("");
@@ -137,7 +225,9 @@ export default function Home() {
     }
     const text = await file.text();
     setFileName(file.name);
-    setInput(`Please analyze this file (${file.name}) and help me with it:\n\n${text.slice(0, 120_000)}`);
+    setInput(`Please analyze this file (${file.name}) and help me with it:
+
+${text.slice(0, 120_000)}`);
     inputRef.current?.focus();
   }
 
@@ -199,19 +289,25 @@ export default function Home() {
         <aside className="hidden w-64 border-r border-zinc-800 p-4 md:flex md:flex-col">
           <div className="mb-5 text-xl font-bold">Sebastian AI</div>
           <button onClick={newChat} className="rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900">＋ New chat</button>
-          <div className="mt-6 text-xs text-zinc-500">Capabilities</div>
-          <div className="mt-2 space-y-2 text-sm text-zinc-300">
-            <div>🌐 Live web search</div><div>🖼️ Photo analysis</div><div>📄 Text file analysis</div><div>⚡ Streaming</div><div>🧠 Local memory</div><div>🎙️ Voice input/output</div><div>🔀 Model routing</div>
+          <div className="mt-5 text-xs text-zinc-500">Chat history</div>
+          <div className="mt-2 flex-1 space-y-1 overflow-y-auto">
+            {chats.map((chat) => (
+              <button key={chat.id} onClick={() => loadChat(chat)} className={`w-full truncate rounded-lg px-3 py-2 text-left text-sm ${chat.id === chatId ? "bg-zinc-800 text-white" : "text-zinc-400 hover:bg-zinc-900"}`}>{chat.title}</button>
+            ))}
           </div>
-          <label className="mt-auto rounded-xl border border-zinc-800 p-3 text-sm">
+          <div className="mt-4 text-xs text-zinc-500">Capabilities</div>
+          <div className="mt-2 space-y-1 text-sm text-zinc-300">
+            <div>🌐 Live web search</div><div>🖼️ Photo analysis</div><div>📄 Text file analysis</div><div>⚡ Streaming</div><div>💾 Persistent local history</div><div>🎙️ Voice input/output</div><div>🔀 Fast model routing</div>
+          </div>
+          <label className="mt-4 rounded-xl border border-zinc-800 p-3 text-sm">
             <div className="mb-2 text-xs text-zinc-500">Memory</div>
-            <textarea value={memory} onChange={(e) => setMemory(e.target.value)} placeholder="Things you want Sebastian AI to remember on this device..." className="h-24 w-full resize-none bg-transparent outline-none" />
+            <textarea value={memory} onChange={(e) => setMemory(e.target.value)} placeholder="Things you want Sebastian AI to remember on this device..." className="h-20 w-full resize-none bg-transparent outline-none" />
           </label>
         </aside>
 
         <section className="flex min-h-screen flex-1 flex-col">
           <header className="flex items-center justify-between border-b border-zinc-800 p-4">
-            <div className="font-semibold md:hidden">Sebastian AI</div>
+            <div className="font-semibold md:hidden">Sebastian AI</div><div className="ml-2 max-w-[35%] truncate text-xs text-zinc-500 md:hidden">{chats.find((c) => c.id === chatId)?.title || "New chat"}</div>
             <div className="ml-auto flex items-center gap-2">
               <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-2 text-xs">
                 <option value="auto">Auto model</option><option value="openrouter/free">Free model</option>
