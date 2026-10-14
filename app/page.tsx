@@ -45,7 +45,7 @@ const STORAGE_KEY = "sebastian-ai-chat-v2";
 const MEMORY_KEY = "sebastian-ai-memory-v1";
 
 function extractSSE(buffer: string) {
-  const events = buffer.split("
+  const events = buffer.split("\n\n");
 
 ");
   return { complete: events.slice(0, -1), rest: events.at(-1) ?? "" };
