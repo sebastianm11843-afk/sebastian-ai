@@ -48,9 +48,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No valid chat messages supplied." }, { status: 400 });
     }
 
-    const key = process.env.OPENROUTER_API_KEY?.trim();
+    const key = (
+      process.env.OPENROUTER_API_KEY?.trim() || process.env.OPEN_ROUTER_KEY?.trim()
+    );
+
     if (!key) {
-      console.error("OPENROUTER_API_KEY is missing from the Vercel runtime.");
+      console.error("No OpenRouter API key is configured in the Vercel runtime.");
       return NextResponse.json({ error: "The AI service is not configured on the server." }, { status: 500 });
     }
 
@@ -93,10 +96,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "The AI returned an empty response." }, { status: 502 });
     }
 
-    return NextResponse.json({
-      reply: reply.trim(),
-      model,
-    });
+    return NextResponse.json({ reply: reply.trim(), model });
   } catch (error) {
     console.error("Chat API error:", error);
     return NextResponse.json(
