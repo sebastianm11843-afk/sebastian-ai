@@ -46,8 +46,6 @@ const MEMORY_KEY = "sebastian-ai-memory-v1";
 
 function extractSSE(buffer: string) {
   const events = buffer.split("\n\n");
-
-");
   return { complete: events.slice(0, -1), rest: events.at(-1) ?? "" };
 }
 
@@ -167,7 +165,6 @@ ${memory.slice(0, 5000)}` : "";
         buffer = parsed.rest;
         for (const event of parsed.complete) {
           for (const line of event.split("\n")) {
-")) {
             if (!line.startsWith("data:")) continue;
             const raw = line.slice(5).trim();
             if (!raw || raw === "[DONE]") continue;
