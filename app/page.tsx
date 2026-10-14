@@ -166,7 +166,7 @@ ${memory.slice(0, 5000)}` : "";
         const parsed = extractSSE(buffer);
         buffer = parsed.rest;
         for (const event of parsed.complete) {
-          for (const line of event.split("
+          for (const line of event.split("\n")) {
 ")) {
             if (!line.startsWith("data:")) continue;
             const raw = line.slice(5).trim();
