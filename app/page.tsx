@@ -1,76 +1,113 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
-const STARTER: Msg[] = [
-  {
-    role: "assistant",
-    content: "Yo 👋 I’m Sebastian AI. Ask me anything and I’ll help you work through it.",
-  },
-];
+const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a text document, turn on web search for current information, or use voice mode." }];
+const STORAGE_KEY = "sebastian-ai-chat-v2";
+const MEMORY_KEY = "sebastian-ai-memory-v1";
 
-const STORAGE_KEY = "sebastian-ai-chat-v1";
+function extractSSE(buffer: string) {
+  const events = buffer.split("\n\n");
+  return { complete: events.slice(0, -1), rest: events.at(-1) ?? "" };
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>(STARTER);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [web, setWeb] = useState(false);
+  const [model, setModel] = useState("auto");
+  const [memory, setMemory] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
+      const savedMemory = localStorage.getItem(MEMORY_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) setMessages(parsed);
+        if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
       }
-    } catch {
-      // Ignore invalid local history and keep the starter chat.
-    } finally {
-      setHydrated(true);
-    }
+      if (savedMemory) setMemory(savedMemory);
+    } catch {}
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-50)));
-    } catch {
-      // Storage can fail in private/restricted browser contexts; chat still works.
-    }
-  }, [messages, hydrated]);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-100)));
+      localStorage.setItem(MEMORY_KEY, memory);
+    } catch {}
+  }, [messages, memory, hydrated]);
+
+  const speechSupported = useMemo(() => typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window), []);
 
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
 
-    const next: Msg[] = [...messages, { role: "user", content: text }];
+    const context = memory.trim() ? `\n\nPrivate user memory supplied by this app:\n${memory.slice(0, 5000)}` : "";
+    const next = [...messages, { role: "user", content: text + context } as Msg];
     setMessages(next);
     setInput("");
     setLoading(true);
+    setMessages((current) => [...current, { role: "assistant", content: "" }]);
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
+        body: JSON.stringify({ messages: next, web, model }),
       });
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || `Request failed (${response.status})`);
+      }
 
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.error || `AI service error (${response.status})`);
-
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", content: data?.reply || "The AI returned an empty response." },
-      ]);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      while (!finished) {
+        const chunk = await reader.read();
+        finished = chunk.done;
+        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !finished });
+        const parsed = extractSSE(buffer);
+        buffer = parsed.rest;
+        for (const event of parsed.complete) {
+          for (const line of event.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            const raw = line.slice(5).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const payload = JSON.parse(raw);
+              const delta = payload?.choices?.[0]?.delta?.content;
+              if (typeof delta === "string" && delta) {
+                setMessages((current) => {
+                  const copy = [...current];
+                  const last = copy.length - 1;
+                  copy[last] = { role: "assistant", content: (copy[last]?.content || "") + delta };
+                  return copy;
+                });
+              }
+            } catch {}
+          }
+        }
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "The server could not complete the AI request.";
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", content: `⚠️ ${message}` },
-      ]);
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      setMessages((current) => {
+        const copy = [...current];
+        copy[copy.length - 1] = { role: "assistant", content: `⚠️ ${message}` };
+        return copy;
+      });
     } finally {
       setLoading(false);
     }
@@ -79,76 +116,107 @@ export default function Home() {
   function newChat() {
     setMessages(STARTER);
     setInput("");
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // Ignore storage errors.
+  }
+
+  async function handleFile(file: File) {
+    const max = 2_000_000;
+    if (file.size > max) {
+      setInput("That file is larger than 2 MB. Please choose a smaller text document.");
+      return;
     }
+    const text = await file.text();
+    setFileName(file.name);
+    setInput(`Please analyze this file (${file.name}) and help me with it:\n\n${text.slice(0, 120000)}`);
+    inputRef.current?.focus();
+  }
+
+  function toggleVoice() {
+    if (!speechSupported) {
+      setInput((v) => v + (v ? " " : "") + "Voice input is not supported by this browser.");
+      return;
+    }
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new Recognition();
+    recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.onresult = (event: any) => {
+      let text = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) text += event.results[i][0].transcript;
+      setInput(text);
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  function speak(text: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   }
 
   return (
-    <main className="min-h-screen flex bg-zinc-950 text-zinc-100">
-      <aside className="hidden md:flex w-64 border-r border-zinc-800 p-4 flex-col">
-        <div className="text-xl font-bold mb-6">Sebastian AI</div>
-        <button
-          onClick={newChat}
-          className="rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900"
-        >
-          ＋ New chat
-        </button>
-        <div className="mt-auto text-xs text-zinc-500">Private AI chat</div>
-      </aside>
-
-      <section className="flex-1 flex flex-col max-w-4xl mx-auto w-full">
-        <header className="md:hidden p-4 border-b border-zinc-800 font-bold flex items-center justify-between">
-          <span>Sebastian AI</span>
-          <button onClick={newChat} className="text-sm text-zinc-400">New chat</button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-5">
-          {messages.map((message, index) => (
-            <div key={`${index}-${message.role}`} className={message.role === "user" ? "flex justify-end" : "flex justify-start"}>
-              <div
-                className={
-                  message.role === "user"
-                    ? "max-w-[85%] rounded-2xl bg-white text-black px-4 py-3 whitespace-pre-wrap"
-                    : "max-w-[85%] rounded-2xl bg-zinc-900 border border-zinc-800 px-4 py-3 whitespace-pre-wrap"
-                }
-              >
-                {message.content}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="text-sm text-zinc-500">Thinking…</div>
-          )}
-        </div>
-
-        <div className="p-4 md:p-6">
-          <div className="flex gap-2 rounded-2xl border border-zinc-700 bg-zinc-900 p-2 focus-within:border-zinc-500">
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Message your AI assistant…"
-              className="flex-1 bg-transparent outline-none px-3 py-2"
-              disabled={loading}
-            />
-            <button
-              onClick={send}
-              disabled={loading || !input.trim()}
-              className="rounded-xl bg-white text-black px-5 py-2 font-semibold disabled:opacity-40"
-            >
-              Send
-            </button>
+    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+      <div className="mx-auto flex min-h-screen max-w-6xl">
+        <aside className="hidden w-64 border-r border-zinc-800 p-4 md:flex md:flex-col">
+          <div className="mb-5 text-xl font-bold">Sebastian AI</div>
+          <button onClick={newChat} className="rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900">＋ New chat</button>
+          <div className="mt-6 text-xs text-zinc-500">Capabilities</div>
+          <div className="mt-2 space-y-2 text-sm text-zinc-300">
+            <div>🌐 Live web search</div><div>📄 File analysis</div><div>⚡ Streaming</div><div>🧠 Local memory</div><div>🎙️ Voice input/output</div><div>🤖 Model routing</div>
           </div>
-        </div>
-      </section>
+          <label className="mt-auto rounded-xl border border-zinc-800 p-3 text-sm">
+            <div className="mb-2 text-xs text-zinc-500">Memory</div>
+            <textarea value={memory} onChange={(e) => setMemory(e.target.value)} placeholder="Things you want Sebastian AI to remember on this device..." className="h-24 w-full resize-none bg-transparent outline-none" />
+          </label>
+        </aside>
+
+        <section className="flex min-h-screen flex-1 flex-col">
+          <header className="flex items-center justify-between border-b border-zinc-800 p-4">
+            <div className="font-semibold md:hidden">Sebastian AI</div>
+            <div className="ml-auto flex items-center gap-2">
+              <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-2 text-xs">
+                <option value="auto">Auto model</option>
+                <option value="openrouter/free">Free model</option>
+              </select>
+              <button onClick={() => setWeb((v) => !v)} className={`rounded-lg border px-3 py-2 text-xs ${web ? "border-emerald-500 text-emerald-300" : "border-zinc-700 text-zinc-300"}`}>🌐 Web {web ? "ON" : "OFF"}</button>
+              <button onClick={newChat} className="rounded-lg border border-zinc-700 px-3 py-2 text-xs">New</button>
+            </div>
+          </header>
+
+          <div className="flex-1 space-y-5 overflow-y-auto p-4 md:p-8">
+            {messages.map((message, index) => (
+              <div key={`${index}-${message.role}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[90%] whitespace-pre-wrap rounded-2xl px-4 py-3 md:max-w-[78%] ${message.role === "user" ? "bg-white text-black" : "border border-zinc-800 bg-zinc-900"}`}>
+                  {message.content || (loading && index === messages.length - 1 ? "Thinking…" : "")}
+                  {message.role === "assistant" && message.content && <button onClick={() => speak(message.content)} className="mt-2 block text-xs text-zinc-500 hover:text-zinc-200">🔊 Read aloud</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t border-zinc-800 p-3 md:p-5">
+            <div className="mx-auto max-w-4xl">
+              {fileName && <div className="mb-2 text-xs text-zinc-500">Attached: {fileName}</div>}
+              <div className="flex items-end gap-2 rounded-2xl border border-zinc-700 bg-zinc-900 p-2">
+                <label className="cursor-pointer rounded-xl px-3 py-2 text-zinc-300 hover:bg-zinc-800" title="Upload text file">📎<input type="file" className="hidden" accept=".txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.html,.css,.xml,.log" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} /></label>
+                <button onClick={toggleVoice} className={`rounded-xl px-3 py-2 ${listening ? "bg-red-500 text-white" : "text-zinc-300 hover:bg-zinc-800"}`} title="Voice input">🎙️</button>
+                <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Message Sebastian AI…" className="min-w-0 flex-1 bg-transparent px-2 py-2 outline-none" disabled={loading} />
+                <button onClick={send} disabled={loading || !input.trim()} className="rounded-xl bg-white px-5 py-2 font-semibold text-black disabled:opacity-40">{loading ? "…" : "Send"}</button>
+              </div>
+              <div className="mt-2 text-center text-[11px] text-zinc-600">Web search is optional and may use OpenRouter search providers. Uploaded text is sent with your chat request.</div>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
   );
 }
