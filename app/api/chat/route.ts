@@ -51,7 +51,7 @@ function chooseModel(requested: unknown, wantsWeb: boolean) {
     return requestedModel;
   }
   if (wantsWeb) return process.env.OPENROUTER_WEB_MODEL?.trim() || process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
-  return process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
+  return process.env.OPENROUTER_FAST_MODEL?.trim() || process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
 }
 
 function isValidImageData(value: unknown) {
@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model,
         messages: upstreamMessages,
-        max_tokens: 6000,
+        max_tokens: 4500,
         temperature: 0.7,
         top_p: 0.95,
         stream: true,
