@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = { role: "user" | "assistant"; content: string; imageData?: string };
 
-const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a text document, turn on web search for current information, or use voice mode." }];
+const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a photo, upload a text document, turn on web search for current information, or use voice mode." }];
 const STORAGE_KEY = "sebastian-ai-chat-v2";
 const MEMORY_KEY = "sebastian-ai-memory-v1";
 
@@ -23,7 +23,10 @@ export default function Home() {
   const [hydrated, setHydrated] = useState(false);
   const [listening, setListening] = useState(false);
   const [fileName, setFileName] = useState("");
+  const [imageData, setImageData] = useState("");
+  const [imageName, setImageName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
@@ -32,7 +35,7 @@ export default function Home() {
       const savedMemory = localStorage.getItem(MEMORY_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
+        if (Array.isArray(parsed) && parsed.length) setMessages(parsed.map((m: Msg) => ({ role: m.role, content: m.content })));
       }
       if (savedMemory) setMemory(savedMemory);
     } catch {}
@@ -42,7 +45,7 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-100)));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-100).map(({ role, content }) => ({ role, content }))));
       localStorage.setItem(MEMORY_KEY, memory);
     } catch {}
   }, [messages, memory, hydrated]);
@@ -51,12 +54,14 @@ export default function Home() {
 
   async function send() {
     const text = input.trim();
-    if (!text || loading) return;
-
+    if ((!text && !imageData) || loading) return;
     const context = memory.trim() ? `\n\nPrivate user memory supplied by this app:\n${memory.slice(0, 5000)}` : "";
-    const next = [...messages, { role: "user", content: text + context } as Msg];
+    const userMessage: Msg = { role: "user", content: text || "Please analyze this photo.", ...(imageData ? { imageData } : {}) };
+    const next = [...messages, { ...userMessage, content: userMessage.content + context }];
     setMessages(next);
     setInput("");
+    setImageData("");
+    setImageName("");
     setLoading(true);
     setMessages((current) => [...current, { role: "assistant", content: "" }]);
 
@@ -64,13 +69,17 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next, web, model }),
+        body: JSON.stringify({
+          messages: next.map(({ role, content }) => ({ role, content })),
+          web,
+          model,
+          imageData: userMessage.imageData || undefined,
+        }),
       });
       if (!response.ok || !response.body) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data?.error || `Request failed (${response.status})`);
       }
-
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -116,6 +125,8 @@ export default function Home() {
   function newChat() {
     setMessages(STARTER);
     setInput("");
+    setImageData("");
+    setImageName("");
   }
 
   async function handleFile(file: File) {
@@ -126,8 +137,27 @@ export default function Home() {
     }
     const text = await file.text();
     setFileName(file.name);
-    setInput(`Please analyze this file (${file.name}) and help me with it:\n\n${text.slice(0, 120000)}`);
+    setInput(`Please analyze this file (${file.name}) and help me with it:\n\n${text.slice(0, 120_000)}`);
     inputRef.current?.focus();
+  }
+
+  function handlePhoto(file: File) {
+    const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+    if (!allowed.includes(file.type)) {
+      setInput("Please choose a JPG, PNG, WEBP, or GIF photo.");
+      return;
+    }
+    if (file.size > 500_000) {
+      setInput("That photo is too large. Please choose an image under 500 KB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      setImageData(result);
+      setImageName(file.name);
+    };
+    reader.readAsDataURL(file);
   }
 
   function toggleVoice() {
@@ -171,7 +201,7 @@ export default function Home() {
           <button onClick={newChat} className="rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900">＋ New chat</button>
           <div className="mt-6 text-xs text-zinc-500">Capabilities</div>
           <div className="mt-2 space-y-2 text-sm text-zinc-300">
-            <div>🌐 Live web search</div><div>📄 File analysis</div><div>⚡ Streaming</div><div>🧠 Local memory</div><div>🎙️ Voice input/output</div><div>🤖 Model routing</div>
+            <div>🌐 Live web search</div><div>🖼️ Photo analysis</div><div>📄 Text file analysis</div><div>⚡ Streaming</div><div>🧠 Local memory</div><div>🎙️ Voice input/output</div><div>🔀 Model routing</div>
           </div>
           <label className="mt-auto rounded-xl border border-zinc-800 p-3 text-sm">
             <div className="mb-2 text-xs text-zinc-500">Memory</div>
@@ -184,8 +214,7 @@ export default function Home() {
             <div className="font-semibold md:hidden">Sebastian AI</div>
             <div className="ml-auto flex items-center gap-2">
               <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-2 text-xs">
-                <option value="auto">Auto model</option>
-                <option value="openrouter/free">Free model</option>
+                <option value="auto">Auto model</option><option value="openrouter/free">Free model</option>
               </select>
               <button onClick={() => setWeb((v) => !v)} className={`rounded-lg border px-3 py-2 text-xs ${web ? "border-emerald-500 text-emerald-300" : "border-zinc-700 text-zinc-300"}`}>🌐 Web {web ? "ON" : "OFF"}</button>
               <button onClick={newChat} className="rounded-lg border border-zinc-700 px-3 py-2 text-xs">New</button>
@@ -196,6 +225,7 @@ export default function Home() {
             {messages.map((message, index) => (
               <div key={`${index}-${message.role}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-[90%] whitespace-pre-wrap rounded-2xl px-4 py-3 md:max-w-[78%] ${message.role === "user" ? "bg-white text-black" : "border border-zinc-800 bg-zinc-900"}`}>
+                  {message.imageData && <img src={message.imageData} alt="Uploaded photo" className="mb-3 max-h-80 max-w-full rounded-xl object-contain" />}
                   {message.content || (loading && index === messages.length - 1 ? "Thinking…" : "")}
                   {message.role === "assistant" && message.content && <button onClick={() => speak(message.content)} className="mt-2 block text-xs text-zinc-500 hover:text-zinc-200">🔊 Read aloud</button>}
                 </div>
@@ -205,14 +235,20 @@ export default function Home() {
 
           <div className="border-t border-zinc-800 p-3 md:p-5">
             <div className="mx-auto max-w-4xl">
-              {fileName && <div className="mb-2 text-xs text-zinc-500">Attached: {fileName}</div>}
-              <div className="flex items-end gap-2 rounded-2xl border border-zinc-700 bg-zinc-900 p-2">
-                <label className="cursor-pointer rounded-xl px-3 py-2 text-zinc-300 hover:bg-zinc-800" title="Upload text file">📎<input type="file" className="hidden" accept=".txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.html,.css,.xml,.log" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} /></label>
-                <button onClick={toggleVoice} className={`rounded-xl px-3 py-2 ${listening ? "bg-red-500 text-white" : "text-zinc-300 hover:bg-zinc-800"}`} title="Voice input">🎙️</button>
+              {(fileName || imageName) && <div className="mb-2 text-xs text-zinc-500">{imageName ? `Photo attached: ${imageName}` : `File attached: ${fileName}`}</div>}
+              {imageData && <img src={imageData} alt="Selected photo preview" className="mb-3 max-h-32 rounded-xl object-contain" />}
+              <div className="flex items-center gap-2 rounded-2xl border border-zinc-700 bg-zinc-900 p-2">
+                <label className="cursor-pointer rounded-xl px-3 py-2 text-lg hover:bg-zinc-800" title="Upload text file">
+                  📎<input type="file" className="hidden" accept=".txt,.md,.csv,.json,.js,.ts,.tsx,.jsx,.html,.css,.xml,.log" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+                </label>
+                <label className="cursor-pointer rounded-xl px-3 py-2 text-lg hover:bg-zinc-800" title="Upload photo">
+                  🖼️<input ref={imageRef} type="file" className="hidden" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => e.target.files?.[0] && handlePhoto(e.target.files[0])} />
+                </label>
+                <button onClick={toggleVoice} className={`rounded-xl px-3 py-2 text-lg ${listening ? "bg-red-500 text-white" : "hover:bg-zinc-800"}`} title="Voice input">🎙️</button>
                 <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Message Sebastian AI…" className="min-w-0 flex-1 bg-transparent px-2 py-2 outline-none" disabled={loading} />
-                <button onClick={send} disabled={loading || !input.trim()} className="rounded-xl bg-white px-5 py-2 font-semibold text-black disabled:opacity-40">{loading ? "…" : "Send"}</button>
+                <button onClick={send} disabled={loading || (!input.trim() && !imageData)} className="rounded-xl bg-white px-5 py-2 font-semibold text-black disabled:opacity-40">{loading ? "…" : "Send"}</button>
               </div>
-              <div className="mt-2 text-center text-[11px] text-zinc-600">Web search is optional and may use OpenRouter search providers. Uploaded text is sent with your chat request.</div>
+              <div className="mt-2 text-center text-[11px] text-zinc-600">Web search is optional. Photos are sent with your chat request for image analysis.</div>
             </div>
           </div>
         </section>
