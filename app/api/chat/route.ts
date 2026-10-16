@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSebastianProviderConfig, getSebastianProviderHeaders } from "@/lib/sebastian-provider";
+import { getSebastianProviderConfig, getSebastianProviderHeaders } from "../../../lib/sebastian-provider";
 
 export const runtime = "nodejs";
 
@@ -38,7 +38,7 @@ function cleanMessages(input: unknown) {
 }
 
 function isValidImageData(value: unknown) {
-  return typeof value === "string" && /^data:image\\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value) && value.length <= 700_000;
+  return typeof value === "string" && /^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value) && value.length <= 700_000;
 }
 
 export async function POST(req: Request) {

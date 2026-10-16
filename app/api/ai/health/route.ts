@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSebastianProviderConfig, getSebastianProviderHeaders } from "@/lib/sebastian-provider";
+import { getSebastianProviderConfig, getSebastianProviderHeaders } from "../../../../lib/sebastian-provider";
 
 export const runtime = "nodejs";
 
