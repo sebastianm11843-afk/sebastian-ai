@@ -40,7 +40,7 @@ async function writeChat(chat: ChatRecord) {
   });
 }
 
-const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a photo, upload a text document, turn on web search for current information, or use voice mode." }];
+const STARTER: Msg[] = [{ role: "assistant", content: "Yo 👋 I’m Sebastian AI. I’m ready. Ask me anything, upload a photo, upload a text document, use voice mode, or enable web search after its provider is configured." }];
 const STORAGE_KEY = "sebastian-ai-chat-v2";
 const MEMORY_KEY = "sebastian-ai-memory-v1";
 
@@ -294,7 +294,7 @@ ${text.slice(0, 120_000)}`);
           </div>
           <div className="mt-4 text-xs text-zinc-500">Capabilities</div>
           <div className="mt-2 space-y-1 text-sm text-zinc-300">
-            <div>🌐 Live web search</div><div>🖼️ Photo analysis</div><div>📄 Text file analysis</div><div>⚡ Streaming</div><div>💾 Persistent local history</div><div>🎙️ Voice input/output</div><div>🔀 Fast model routing</div>
+            <div>🌐 Web search (setup pending)</div><div>🖼️ Photo analysis</div><div>📄 Text file analysis</div><div>⚡ Streaming</div><div>💾 Persistent local history</div><div>🎙️ Voice input/output</div><div>🔀 Fast model routing</div>
           </div>
           <label className="mt-4 rounded-xl border border-zinc-800 p-3 text-sm">
             <div className="mb-2 text-xs text-zinc-500">Memory</div>
@@ -307,7 +307,7 @@ ${text.slice(0, 120_000)}`);
             <div className="font-semibold md:hidden">Sebastian AI</div><div className="ml-2 max-w-[35%] truncate text-xs text-zinc-500 md:hidden">{chats.find((c) => c.id === chatId)?.title || "New chat"}</div>
             <div className="ml-auto flex items-center gap-2">
               <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-2 text-xs">
-                <option value="auto">Auto model</option><option value="openrouter/free">Free model</option>
+                <option value="auto">Auto model</option><option value="sebastian">Sebastian model</option>
               </select>
               <button onClick={() => setWeb((v) => !v)} className={`rounded-lg border px-3 py-2 text-xs ${web ? "border-emerald-500 text-emerald-300" : "border-zinc-700 text-zinc-300"}`}>🌐 Web {web ? "ON" : "OFF"}</button>
               <button onClick={newChat} className="rounded-lg border border-zinc-700 px-3 py-2 text-xs">New</button>
