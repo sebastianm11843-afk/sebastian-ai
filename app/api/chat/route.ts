@@ -20,7 +20,7 @@ function rateLimited(key: string) {
   if (!current || current.resetAt <= now) {
     rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
     if (rateBuckets.size > 5_000) {
-      for (const [bucketKey, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(bucketKey);
+      rateBuckets.forEach((bucket, bucketKey) => { if (bucket.resetAt <= now) rateBuckets.delete(bucketKey); });
     }
     return false;
   }
